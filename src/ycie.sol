@@ -9,7 +9,7 @@ contract TokenManager is Ownable {
      * Constants
      */
     DelegationManager private immutable dm;
-    
+
     /**
      * Errors
      */
@@ -25,7 +25,7 @@ contract TokenManager is Ownable {
     // staker address -> pool address -> staker's sub-shares in that pool
     mapping(address => mapping(address => uint256)) public stakerPoolShares;
     // pool address -> total sub-shares in that pool
-    mapping (address => uint256) totalSPShares;
+    mapping(address => uint256) totalSPShares;
 
     // pool address -> # of shares allocated to that pool
     mapping(address => uint256) public poolShares;
@@ -44,19 +44,34 @@ contract TokenManager is Ownable {
      */
 
     function stakeToPool(address pool, uint256 amount) external {
-        if (pool == address(0))
-            revert TokenManger__PoolDNE();
+        if (pool == address(0)) revert TokenManger__PoolDNE();
 
+        // accounting
         stakerPoolShares[msg.sender][pool] += amount;
+        totalSPShares += amount;
 
+        // move tokens from staker to pool
         TokenPool(pool).stake(msg.sender, amount);
+
+        // increase delegated operator's balance
+        dm.stake(msg.sender, pool, amount);
     }
 
     function withdrawFromPool(address pool) external {
-        if (pool == address(0))
-            revert TokenManger__PoolDNE();
+        if (pool == address(0)) revert TokenManger__PoolDNE();
 
-        TokenPool(pool).withdraw(msg.sender);
+        uint256 amount = stakerPoolShares[msg.sender][pool];
+
+        // accounting
+        stakerPoolShares[msg.sender][pool] = 0;
+        totalSPShares -= amount;
+
+        // move tokens from pool to staker
+        if (!isSlashed(msg.sender))
+            TokenPool(pool).withdraw(msg.sender, amount);
+
+        // decrease delegated operator's balance
+        dm.withdraw(msg.sender, pool, amount);
     }
 
     /**
@@ -78,6 +93,14 @@ contract TokenManager is Ownable {
         totalPoolShares -= poolShares[pool];
         poolShares[pool] = amount;
         totalPoolShares += amount;
+    }
+
+    /**
+     * View & Pure Functions
+     */
+
+    function isSlashed(address staker) public view returns (bool) {
+        return dm.isStakerSlashed(staker);
     }
 }
 
@@ -104,46 +127,19 @@ contract TokenPool is Ownable {
     constructor(address tokenAddress) Ownable(msg.sender) {
         token = IERC20(tokenAddress);
     }
-    
+
     /**
      * External & Public Functions
      */
 
     function stake(address staker, uint256 amount) external onlyOwner {
-        if (amount == 0)
-            revert TokenPool__DepositNotPositive();
-
-        // increase delegated operator's balance 
-        dm.stake(staker, amount);
+        if (amount == 0) revert TokenPool__DepositNotPositive();
 
         token.transferFrom(staker, address(this), amount);
     }
 
-    function withdraw(address staker) external onlyOwner {
-        uint balance = stakerBalance[staker];
-        
-        stakerBalance[staker] = 0;
-        dm.withdraw(staker, balance);
-
-        if (!dm.isStakerSlashed(staker)) {
-            token.transfer(staker, balance);
-        }
-    }
-
-    /**
-     * View & Pure Functions
-     */
-
-    function isSlashed(address staker) public view returns(bool) {
-        return dm.isOperatorSlashed(staker);
-    }
-
-    function existsIn(address element, address[] memory array) private pure returns(bool) {
-        for (uint i=0; i < array.length; i++) {
-            if (array[i] == element)
-                return true;
-        }
-        return false;
+    function withdraw(address staker, uint256 amount) external onlyOwner {
+        token.transfer(staker, amount);
     }
 }
 
@@ -154,13 +150,13 @@ contract DelegationManager is Ownable {
     TokenManager public immutable tm;
     Slasher public immutable slash;
     IERC20 public immutable token;
-    
+
     /**
      * Errors
      */
     error DelegationManager__OperatorSlashed();
     error DelegationManager__StakerSlashed();
-    
+
     /**
      * State Variables
      */
@@ -172,11 +168,10 @@ contract DelegationManager is Ownable {
      * Special Functions
      */
     constructor() Ownable(msg.sender) {
-        tp = TokenPool(owner);
+        tm = TokenManager(owner);
         slash = new Slasher(address(this));
-        token = tp.token();
     }
-    
+
     /**
      * External & Public Functions
      */
@@ -205,8 +200,7 @@ contract DelegationManager is Ownable {
             revert DelegationManager__OperatorSlashed();
 
         address[] memory slashers = slasher[msg.sender];
-        if (existsIn(_slasher, slashers))
-            return;
+        if (existsIn(_slasher, slashers)) return;
 
         slasher[msg.sender].push(_slasher);
     }
@@ -218,21 +212,25 @@ contract DelegationManager is Ownable {
         address[] memory slashers = slasher[msg.sender];
         uint length = slashers.length;
 
-        for (uint i=0; i < length; i++) {
+        for (uint i = 0; i < length; i++) {
             if (slashers[i] == _slasher) {
-                slasher[msg.sender][i] = slasher[msg.sender][length-1];
+                slasher[msg.sender][i] = slasher[msg.sender][length - 1];
                 slasher[msg.sender].pop();
                 return;
             }
         }
     }
 
-    function stake(address staker, uint256 amount) external onlyOwner {
-        operatorBalance[delegation[staker]] += amount;
+    function stake(
+        address staker,
+        address pool,
+        uint256 amount
+    ) external onlyOwner {
+        operatorPoolShares[delegation[staker]][pool] += amount;
     }
 
-    function withdraw(address staker, uint256 amount) external {
-        operatorBalance[delegation[staker]] -= amount;
+    function withdraw(address staker, address pool, uint256 amount) external {
+        operatorPoolShares[delegation[staker]][pool] -= amount;
         //delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
     }
 
@@ -244,23 +242,27 @@ contract DelegationManager is Ownable {
      * View & Pure Functions
      */
 
-    function isStakerSlashed(address staker) public view returns(bool) {
+    function isStakerSlashed(address staker) public view returns (bool) {
         return isOperatorSlashed(delegation[staker]);
     }
 
-    function isOperatorSlashed(address operator) public view returns(bool) {
+    function isOperatorSlashed(address operator) public view returns (bool) {
         return slash.isSlashed(operator);
     }
 
-    function getSlashers(address operator) public view returns(address[] memory) {
+    function getSlashers(
+        address operator
+    ) public view returns (address[] memory) {
         return slasher[operator];
     }
 
-    function existsIn(address element, address[] memory array) public pure returns(bool) {
+    function existsIn(
+        address element,
+        address[] memory array
+    ) public pure returns (bool) {
         uint length = array.length;
-        for (uint i=0; i < length; i++) {
-            if (array[i] == element)
-                return true;
+        for (uint i = 0; i < length; i++) {
+            if (array[i] == element) return true;
         }
         return false;
     }
@@ -272,17 +274,17 @@ contract Slasher is Ownable {
     /**
      * Type Declarations
      */
-    // generic Proof object - replace 
+    // generic Proof object - replace
     // True = fraudulent => user is slashed
     struct Proof {
         bool fraudulent;
     }
-    
+
     /**
      * State Variables
      */
-    mapping (address => bool) public isSlashed;
-    
+    mapping(address => bool) public isSlashed;
+
     constructor(address owner) Ownable(owner) {
         dm = DelegationManager(owner);
     }
@@ -292,7 +294,7 @@ contract Slasher is Ownable {
      */
     function slash(address operator, Proof memory proof) public {
         // no need to do anything if proof is not valid
-        if (isProofValid(proof)) 
+        if (isProofValid(proof))
             if (dm.existsIn(operator, dm.getSlashers(operator)))
                 isSlashed[operator] = true;
     }
@@ -300,7 +302,7 @@ contract Slasher is Ownable {
     /**
      * View & Pure Functions
      */
-    function isProofValid(Proof memory proof) private pure returns(bool) {
+    function isProofValid(Proof memory proof) private pure returns (bool) {
         return proof.fraudulent;
     }
 }
