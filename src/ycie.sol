@@ -27,7 +27,7 @@ contract TokenPool {
      * Special Functions
      */
     constructor(address tokenAddress) {
-        dm = new DelegationManager();
+        dm = new DelegationManager(address(this));
         token = IERC20(tokenAddress);
     }
     
@@ -48,34 +48,22 @@ contract TokenPool {
     }
 
     function withdraw() external {
-        uint balance;
+        uint balance = stakerBalance[msg.sender];
         
-        // check if slashed
-        // decrease delegated operator's balance
-        // delete delegation mapping 
-            // delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
-        if (!dm.withdraw(msg.sender))
-            balance = stakerBalance[msg.sender];
-
         stakerBalance[msg.sender] = 0;
+        dm.withdraw(msg.sender, balance);
 
-        token.transfer(msg.sender, balance);
+        if (!dm.isStakerSlashed(msg.sender)) {
+            token.transfer(msg.sender, balance);
+        }
     }
 
     /**
      * View & Pure Functions
      */
 
-    // TODO - update
     function isSlashed(address staker) public view returns(bool) {
-        address[] memory slashers = slasher[staker];
-
-        for (uint i=0; i < slashers.length; i++) {
-            if (Slasher(slashers[i]).isSlashed(staker) == true)
-                return true;
-        }
-        
-        return false;
+        return dm.isOperatorSlashed(staker);
     }
 
     function existsIn(address element, address[] memory array) private pure returns(bool) {
@@ -92,12 +80,14 @@ contract DelegationManager is Ownable {
      * Constants
      */
     TokenPool public immutable tp;
+    Slasher public immutable slash;
     IERC20 public immutable token;
     
     /**
      * Errors
      */
     error DelegationManager__OperatorSlashed();
+    error DelegationManager__StakerSlashed();
     
     /**
      * State Variables
@@ -109,9 +99,10 @@ contract DelegationManager is Ownable {
     /**
      * Special Functions
      */
-    constructor() {
-        tp = TokenPool(owner());
-        token = tp.token;
+    constructor(address owner) Ownable(owner) {
+        tp = TokenPool(owner);
+        slash = new Slasher(address(this));
+        token = tp.token();
     }
     
     /**
@@ -122,23 +113,23 @@ contract DelegationManager is Ownable {
      * @notice Staker delegates to Operator
      */
     function delegateTo(address operator) external {
-        // TODO - identify what to do, make isSlashed
-        if (isSlashed(msg.sender))
-            revert;
+        if (isStakerSlashed(msg.sender))
+            revert DelegationManager__StakerSlashed();
+        if (isOperatorSlashed(operator))
+            revert DelegationManager__OperatorSlashed();
 
-        uint slasherBalance = tp.stakerBalance[msg.sender];
+        uint256 stakerBalance = tp.stakerBalance(msg.sender);
         address currentDelegate = delegation[msg.sender];
 
-        if (currentDelegate != address(0))
-            operatorBalance[currentDelegate] -= slasherBalance;
-        operatorBalance[operator] += slasherBalance;
+        operatorBalance[currentDelegate] -= stakerBalance;
+        operatorBalance[operator] += stakerBalance;
     }
 
     /**
      * @notice Operator enrolls in Slasher
      */
     function enroll(address _slasher) external {
-        if (isSlashed(msg.sender))
+        if (isOperatorSlashed(msg.sender))
             revert DelegationManager__OperatorSlashed();
 
         address[] memory slashers = slasher[msg.sender];
@@ -148,26 +139,30 @@ contract DelegationManager is Ownable {
         slasher[msg.sender].push(_slasher);
     }
 
-    function stake(uint256 amount) external onlyOwner {
-        if (amount == 0)
-            revert TokenPool__DepositNotPositive();
+    /**
+     * @notice Operator exits from Slasher
+     */
+    function exit(address _slasher) external {
+        address[] memory slashers = slasher[msg.sender];
+        uint length = slashers.length;
 
-        stakerBalance[msg.sender] += amount;
-        token.transferFrom(msg.sender, address(this), amount);
+        for (uint i=0; i < length; i++) {
+            if (slashers[i] == _slasher) {
+                slasher[msg.sender][i] = slasher[msg.sender][length-1];
+                slasher[msg.sender].pop();
+                return;
+            }
+        }
     }
 
-    function withdraw() external {
-        uint _balance;
-        if (!isSlashed(msg.sender))
-            _balance = stakerBalance[msg.sender];
-        
-        stakerBalance[msg.sender] = 0;
-        delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
-
-        token.transfer(msg.sender, _balance);
+    function stake(address staker, uint256 amount) external onlyOwner {
+        operatorBalance[delegation[staker]] += amount;
     }
 
-    
+    function withdraw(address staker, uint256 amount) external {
+        operatorBalance[delegation[staker]] -= amount;
+        //delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
+    }
 
     /**
      * Internal and Private Functions
@@ -177,20 +172,21 @@ contract DelegationManager is Ownable {
      * View & Pure Functions
      */
 
-    // TODO
-    function isSlashed(address staker) public view returns(bool) {
-        address[] memory slashers = slasher[staker];
-
-        for (uint i=0; i < slashers.length; i++) {
-            if (Slasher(slashers[i]).isSlashed(staker) == true)
-                return true;
-        }
-        
-        return false;
+    function isStakerSlashed(address staker) public view returns(bool) {
+        return isOperatorSlashed(delegation[staker]);
     }
 
-    function existsIn(address element, address[] memory array) private pure returns(bool) {
-        for (uint i=0; i < array.length; i++) {
+    function isOperatorSlashed(address operator) public view returns(bool) {
+        return slash.isSlashed(operator);
+    }
+
+    function getSlashers(address operator) public view returns(address[] memory) {
+        return slasher[operator];
+    }
+
+    function existsIn(address element, address[] memory array) public pure returns(bool) {
+        uint length = array.length;
+        for (uint i=0; i < length; i++) {
             if (array[i] == element)
                 return true;
         }
@@ -198,16 +194,12 @@ contract DelegationManager is Ownable {
     }
 }
 
-contract Slasher {
+contract Slasher is Ownable {
+    DelegationManager dm;
+
     /**
      * Type Declarations
      */
-    mapping (address => bool) public isSlashed;
-    
-    /**
-     * State Variables
-     */
-
     // generic Proof object - replace 
     // True = fraudulent => user is slashed
     struct Proof {
@@ -215,12 +207,22 @@ contract Slasher {
     }
     
     /**
+     * State Variables
+     */
+    mapping (address => bool) public isSlashed;
+    
+    constructor(address owner) Ownable(owner) {
+        dm = DelegationManager(owner);
+    }
+
+    /**
      * External & Public Functions
      */
     function slash(address operator, Proof memory proof) public {
         // no need to do anything if proof is not valid
-        if (isProofValid(proof))
-            isSlashed[operator] = true;
+        if (isProofValid(proof)) 
+            if (dm.existsIn(operator, dm.getSlashers(operator)))
+                isSlashed[operator] = true;
     }
 
     /**
