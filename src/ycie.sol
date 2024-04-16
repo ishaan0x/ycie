@@ -6,7 +6,11 @@ import {Ownable} from "openzeppelin/access/Ownable.sol";
 
 
 contract TokenPool {
-    DelegationManager dm;
+    /**
+     * Constants
+     */
+    DelegationManager public immutable dm;
+    IERC20 public immutable token;
 
     /**
      * Errors
@@ -18,7 +22,6 @@ contract TokenPool {
      * State Variables
      */
     mapping(address => uint256) public stakerBalance;
-    IERC20 public token;
 
     /**
      * Special Functions
@@ -59,21 +62,11 @@ contract TokenPool {
         token.transfer(msg.sender, balance);
     }
 
-    // function enroll(address _slasher) external {
-    //     if (isSlashed(msg.sender))
-    //         revert TokenPool__StakerSlashed();
-
-    //     address[] memory slashers = slasher[msg.sender];
-    //     if (existsIn(_slasher, slashers))
-    //         return;
-
-    //     slasher[msg.sender].push(_slasher);
-    // }
-
     /**
      * View & Pure Functions
      */
 
+    // TODO - update
     function isSlashed(address staker) public view returns(bool) {
         address[] memory slashers = slasher[staker];
 
@@ -96,25 +89,66 @@ contract TokenPool {
 
 contract DelegationManager is Ownable {
     /**
+     * Constants
+     */
+    TokenPool public immutable tp;
+    IERC20 public immutable token;
+    
+    /**
+     * Errors
+     */
+    error DelegationManager__OperatorSlashed();
+    
+    /**
      * State Variables
      */
     mapping(address => uint256) public operatorBalance;
     mapping(address => address) public delegation;
     mapping(address => address[]) public slasher;
-    IERC20 public token;
 
     /**
      * Special Functions
      */
-    constructor(address tokenAddress) {
-        token = IERC20(tokenAddress);
+    constructor() {
+        tp = TokenPool(owner());
+        token = tp.token;
     }
     
     /**
      * External & Public Functions
      */
 
-    function stake(uint256 amount) external {
+    /**
+     * @notice Staker delegates to Operator
+     */
+    function delegateTo(address operator) external {
+        // TODO - identify what to do, make isSlashed
+        if (isSlashed(msg.sender))
+            revert;
+
+        uint slasherBalance = tp.stakerBalance[msg.sender];
+        address currentDelegate = delegation[msg.sender];
+
+        if (currentDelegate != address(0))
+            operatorBalance[currentDelegate] -= slasherBalance;
+        operatorBalance[operator] += slasherBalance;
+    }
+
+    /**
+     * @notice Operator enrolls in Slasher
+     */
+    function enroll(address _slasher) external {
+        if (isSlashed(msg.sender))
+            revert DelegationManager__OperatorSlashed();
+
+        address[] memory slashers = slasher[msg.sender];
+        if (existsIn(_slasher, slashers))
+            return;
+
+        slasher[msg.sender].push(_slasher);
+    }
+
+    function stake(uint256 amount) external onlyOwner {
         if (amount == 0)
             revert TokenPool__DepositNotPositive();
 
@@ -133,21 +167,17 @@ contract DelegationManager is Ownable {
         token.transfer(msg.sender, _balance);
     }
 
-    function enroll(address _slasher) external {
-        if (isSlashed(msg.sender))
-            revert TokenPool__StakerSlashed();
+    
 
-        address[] memory slashers = slasher[msg.sender];
-        if (existsIn(_slasher, slashers))
-            return;
-
-        slasher[msg.sender].push(_slasher);
-    }
+    /**
+     * Internal and Private Functions
+     */
 
     /**
      * View & Pure Functions
      */
 
+    // TODO
     function isSlashed(address staker) public view returns(bool) {
         address[] memory slashers = slasher[staker];
 
