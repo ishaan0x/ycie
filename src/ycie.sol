@@ -26,6 +26,9 @@ contract TokenManager is Ownable {
     // staker -> list of pool addresses that staker stakes to
     mapping(address => address[]) public stakerPools;
 
+    // staker -> withdrawal complete time
+    mapping(address => uint256) public withdrawalCompleteTime;
+
     // staker address -> pool address -> staker's sub-shares in that pool
     mapping(address => mapping(address => uint256)) public stakerPoolShares;
     // pool address -> total sub-shares in that pool
@@ -91,6 +94,29 @@ contract TokenManager is Ownable {
 
         // decrease delegated operator's balance
         dm.withdrawFromPool(msg.sender, pool, amount);
+    }
+
+    function queueWithdrawal(address pool) external {
+        address[] memory pools = stakerPools[msg.sender];
+        uint256 length = pools.length;
+
+        bool isNotSlashed = !isSlashed(msg.sender);
+        for (uint i = 0; i < length; i++) {
+            uint256 amount = stakerPoolShares[msg.sender][pools[i]];
+
+            // accounting
+            stakerPoolShares[msg.sender][pool] = 0;
+            totalSPShares[pool] -= amount;
+
+            // move tokens from pool to staker
+            if (isNotSlashed)
+                TokenPool(pool).withdraw(msg.sender, amount);
+
+            // decrease delegated operator's balance
+            dm.withdrawFromPool(msg.sender, pool, amount);
+        }
+        // Remove from indexed pools for user
+        stakerPools[msg.sender] = new address[];
     }
 
     /**
@@ -188,13 +214,14 @@ contract DelegationManager is Ownable {
     mapping(address => mapping(address => uint256)) public operatorPoolShares;
     mapping(address => address) public delegation;
     mapping(address => address[]) public slasher;
+    mapping(address => uint256) public unbondingPeriod;
 
     /**
      * Special Functions
      */
     constructor() Ownable(msg.sender) {
         tm = TokenManager(msg.sender);
-        slash = new Slasher(address(this));
+        slash = new Slasher();
     }
 
     /**
@@ -316,8 +343,8 @@ contract Slasher is Ownable {
      */
     mapping(address => bool) public isSlashed;
 
-    constructor(address owner) Ownable(owner) {
-        dm = DelegationManager(owner);
+    constructor() Ownable(msg.sender) {
+        dm = DelegationManager(msg.sender);
     }
 
     /**
