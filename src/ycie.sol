@@ -24,7 +24,7 @@ contract TokenManager is Ownable {
     mapping(address => address) public tokenPoolRegistry;
 
     // staker -> list of pool addresses that staker stakes to
-    mapping (address => address[]) public stakerPools;
+    mapping(address => address[]) public stakerPools;
 
     // staker address -> pool address -> staker's sub-shares in that pool
     mapping(address => mapping(address => uint256)) public stakerPoolShares;
@@ -62,7 +62,7 @@ contract TokenManager is Ownable {
         TokenPool(pool).stake(msg.sender, amount);
 
         // increase delegated operator's balance
-        dm.stake(msg.sender, pool, amount);
+        dm.stakeToPool(msg.sender, pool, amount);
     }
 
     function withdrawFromPool(address pool) external {
@@ -70,13 +70,13 @@ contract TokenManager is Ownable {
 
         uint256 amount = stakerPoolShares[msg.sender][pool];
         if (amount == 0) revert TokenManager__NoMoneyInPool();
-        
+
         // Remove from indexed pools for user
         address[] memory pools = stakerPools[msg.sender];
         uint256 length = pools.length;
-        for (uint i=0; i<length; i++) {
+        for (uint i = 0; i < length; i++) {
             if (pools[i] == pool) {
-                stakerPools[msg.sender][i] = pools[length-1];
+                stakerPools[msg.sender][i] = pools[length - 1];
                 stakerPools[msg.sender].pop();
             }
         }
@@ -90,7 +90,7 @@ contract TokenManager is Ownable {
             TokenPool(pool).withdraw(msg.sender, amount);
 
         // decrease delegated operator's balance
-        dm.withdraw(msg.sender, pool, amount);
+        dm.withdrawFromPool(msg.sender, pool, amount);
     }
 
     /**
@@ -122,7 +122,9 @@ contract TokenManager is Ownable {
         return dm.isStakerSlashed(staker);
     }
 
-    function getStakerPools(address staker) public view returns (address[] memory) {
+    function getStakerPools(
+        address staker
+    ) public view returns (address[] memory) {
         return stakerPools[staker];
     }
 }
@@ -212,9 +214,9 @@ contract DelegationManager is Ownable {
         uint256 length = pools.length;
         address currentDelegate = delegation[msg.sender];
 
-        for (uint i=0; i<length; i++) {
+        for (uint i = 0; i < length; i++) {
             address pool = pools[i];
-            uint256 amount = tm.stakerPoolShares(msg.sender,pool);
+            uint256 amount = tm.stakerPoolShares(msg.sender, pool);
 
             operatorPoolShares[currentDelegate][pool] -= amount;
             operatorPoolShares[operator][pool] += amount;
@@ -250,7 +252,7 @@ contract DelegationManager is Ownable {
         }
     }
 
-    function stake(
+    function stakeToPool(
         address staker,
         address pool,
         uint256 amount
@@ -258,7 +260,7 @@ contract DelegationManager is Ownable {
         operatorPoolShares[delegation[staker]][pool] += amount;
     }
 
-    function withdraw(address staker, address pool, uint256 amount) external {
+    function withdrawFromPool(address staker, address pool, uint256 amount) external {
         operatorPoolShares[delegation[staker]][pool] -= amount;
         //delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
     }
