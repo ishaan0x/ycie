@@ -4,13 +4,88 @@ pragma solidity ^0.8.25;
 import {IERC20} from "interfaces/IERC20.sol";
 import {Ownable} from "openzeppelin/access/Ownable.sol";
 
-
-contract TokenPool {
+contract TokenManager is Ownable {
     /**
      * Constants
      */
-    DelegationManager public immutable dm;
-    IERC20 public immutable token;
+    DelegationManager private immutable dm;
+    
+    /**
+     * Errors
+     */
+    error TokenManger__PoolDNE();
+    error TokenManger__PoolAlreadyExists();
+
+    /**
+     * State Variables
+     */
+    // token address -> pool address
+    mapping(address => address) public tokenPoolRegistry;
+
+    // staker address -> pool address -> staker's sub-shares in that pool
+    mapping(address => mapping(address => uint256)) public stakerPoolShares;
+    // pool address -> total sub-shares in that pool
+    mapping (address => uint256) totalSPShares;
+
+    // pool address -> # of shares allocated to that pool
+    mapping(address => uint256) public poolShares;
+    // # of shares allocated
+    uint256 public totalPoolShares;
+
+    /**
+     * Special Functions
+     */
+    constructor(address tokenAddress) Ownable(msg.sender) {
+        dm = new DelegationManager();
+    }
+
+    /**
+     * External & Public Functions
+     */
+
+    function stakeToPool(address pool, uint256 amount) external {
+        if (pool == address(0))
+            revert TokenManger__PoolDNE();
+
+        stakerPoolShares[msg.sender][pool] += amount;
+
+        TokenPool(pool).stake(msg.sender, amount);
+    }
+
+    function withdrawFromPool(address pool) external {
+        if (pool == address(0))
+            revert TokenManger__PoolDNE();
+
+        TokenPool(pool).withdraw(msg.sender);
+    }
+
+    /**
+     * onlyOwner Functions
+     */
+
+    /**
+     * @notice no way to remove token pool - modify pool shares to 0 instead
+     */
+    function addTokenPool(address token) external onlyOwner {
+        if (tokenPoolRegistry[token] != address(0))
+            revert TokenManger__PoolAlreadyExists();
+
+        TokenPool tp = new TokenPool(token);
+        tokenPoolRegistry[token] = address(tp);
+    }
+
+    function modifyPoolShares(address pool, uint256 amount) external onlyOwner {
+        totalPoolShares -= poolShares[pool];
+        poolShares[pool] = amount;
+        totalPoolShares += amount;
+    }
+}
+
+contract TokenPool is Ownable {
+    /**
+     * Constants
+     */
+    IERC20 private immutable token;
 
     /**
      * Errors
@@ -21,13 +96,12 @@ contract TokenPool {
     /**
      * State Variables
      */
-    mapping(address => uint256) public stakerBalance;
+    uint256 public totalShares;
 
     /**
      * Special Functions
      */
-    constructor(address tokenAddress) {
-        dm = new DelegationManager(address(this));
+    constructor(address tokenAddress) Ownable(msg.sender) {
         token = IERC20(tokenAddress);
     }
     
@@ -35,26 +109,24 @@ contract TokenPool {
      * External & Public Functions
      */
 
-    function stake(uint256 amount) external {
+    function stake(address staker, uint256 amount) external onlyOwner {
         if (amount == 0)
             revert TokenPool__DepositNotPositive();
 
-        stakerBalance[msg.sender] += amount;
-
         // increase delegated operator's balance 
-        dm.stake(msg.sender, amount);
+        dm.stake(staker, amount);
 
-        token.transferFrom(msg.sender, address(this), amount);
+        token.transferFrom(staker, address(this), amount);
     }
 
-    function withdraw() external {
-        uint balance = stakerBalance[msg.sender];
+    function withdraw(address staker) external onlyOwner {
+        uint balance = stakerBalance[staker];
         
-        stakerBalance[msg.sender] = 0;
-        dm.withdraw(msg.sender, balance);
+        stakerBalance[staker] = 0;
+        dm.withdraw(staker, balance);
 
-        if (!dm.isStakerSlashed(msg.sender)) {
-            token.transfer(msg.sender, balance);
+        if (!dm.isStakerSlashed(staker)) {
+            token.transfer(staker, balance);
         }
     }
 
@@ -79,7 +151,7 @@ contract DelegationManager is Ownable {
     /**
      * Constants
      */
-    TokenPool public immutable tp;
+    TokenManager public immutable tm;
     Slasher public immutable slash;
     IERC20 public immutable token;
     
@@ -92,14 +164,14 @@ contract DelegationManager is Ownable {
     /**
      * State Variables
      */
-    mapping(address => uint256) public operatorBalance;
+    mapping(address => mapping(address => uint256)) public operatorPoolShares;
     mapping(address => address) public delegation;
     mapping(address => address[]) public slasher;
 
     /**
      * Special Functions
      */
-    constructor(address owner) Ownable(owner) {
+    constructor() Ownable(msg.sender) {
         tp = TokenPool(owner);
         slash = new Slasher(address(this));
         token = tp.token();
