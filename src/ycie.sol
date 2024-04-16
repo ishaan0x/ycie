@@ -16,6 +16,8 @@ contract TokenManager is Ownable {
     error TokenManger__PoolDNE();
     error TokenManger__PoolAlreadyExists();
     error TokenManager__NoMoneyInPool();
+    error TokenManager__WithdrawalAlreadyInProgress();
+    error TokenManager__WithdrawalNotReady();
 
     /**
      * State Variables
@@ -96,27 +98,39 @@ contract TokenManager is Ownable {
         dm.withdrawFromPool(msg.sender, pool, amount);
     }
 
-    function queueWithdrawal(address pool) external {
+    function queueWithdrawal() external {
+        if (withdrawalCompleteTime[msg.sender] != 0)
+            revert TokenManager__WithdrawalAlreadyInProgress();
+        
+        withdrawalCompleteTime[msg.sender] =
+            block.timestamp +
+            dm.stakerUnbondingPeriod(msg.sender);
+    }
+
+    function completeWithdrawal() external {
+        if (block.timestamp < withdrawalCompleteTime[msg.sender])
+            revert TokenManager__WithdrawalNotReady();
+
         address[] memory pools = stakerPools[msg.sender];
         uint256 length = pools.length;
-
         bool isNotSlashed = !isSlashed(msg.sender);
+
         for (uint i = 0; i < length; i++) {
-            uint256 amount = stakerPoolShares[msg.sender][pools[i]];
+            address pool = pools[i];
+            uint256 amount = stakerPoolShares[msg.sender][pool];
 
             // accounting
             stakerPoolShares[msg.sender][pool] = 0;
             totalSPShares[pool] -= amount;
 
             // move tokens from pool to staker
-            if (isNotSlashed)
-                TokenPool(pool).withdraw(msg.sender, amount);
+            if (isNotSlashed) TokenPool(pool).withdraw(msg.sender, amount);
 
             // decrease delegated operator's balance
             dm.withdrawFromPool(msg.sender, pool, amount);
         }
         // Remove from indexed pools for user
-        stakerPools[msg.sender] = new address[];
+        delete stakerPools[msg.sender];
     }
 
     /**
@@ -287,7 +301,11 @@ contract DelegationManager is Ownable {
         operatorPoolShares[delegation[staker]][pool] += amount;
     }
 
-    function withdrawFromPool(address staker, address pool, uint256 amount) external {
+    function withdrawFromPool(
+        address staker,
+        address pool,
+        uint256 amount
+    ) external {
         operatorPoolShares[delegation[staker]][pool] -= amount;
         //delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
     }
@@ -312,6 +330,12 @@ contract DelegationManager is Ownable {
         address operator
     ) public view returns (address[] memory) {
         return slasher[operator];
+    }
+
+    function stakerUnbondingPeriod(
+        address staker
+    ) public view returns (uint256) {
+        return unbondingPeriod[delegation[staker]];
     }
 
     function existsIn(
