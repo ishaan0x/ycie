@@ -384,6 +384,20 @@ contract SlasherManager is Ownable {
             }
         }
         canSlash[msg.sender][slasher] = false;
+
+        if(Slasher(slasher).unbondingPeriod == unbondingPeriod[msg.sender]) {
+            uint256 maxUnbondingPeriod = 0;
+
+            address[] memory _slashers = slashers[msg.sender];
+            uint256 length = _slashers.length;
+            
+            for (uint i=0; i<length; i++) {
+                uint256 ubp = Slasher(slashers[i]).unbondingPeriod;
+                if (ubp > maxUnbondingPeriod)
+                    maxUnbondingPeriod = ubp;
+            }
+            unbondingPeriod[msg.sender] = maxUnbondingPeriod;
+        }
     }
 
     function slash(address operator) external {
