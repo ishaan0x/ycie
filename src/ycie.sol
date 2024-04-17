@@ -277,8 +277,9 @@ contract DelegationManager is Ownable {
         address pool,
         uint256 amount
     ) external {
-        operatorPoolShares[delegation[staker]][pool] -= amount;
-        //delete slasher[msg.sender]; // TODO - see if this is valid, might need to create a function
+        address operator = delegation[staker];
+        operatorPoolShares[operator][pool] -= amount;
+        sm.removeAllSlashers(operator);
     }
 
     /**
@@ -393,7 +394,7 @@ contract SlasherManager is Ownable {
     function removeAllSlashers(address operator) external onlyOwner {
         address[] memory _slashers = slashers[msg.sender];
         uint256 length = _slashers.length;
-        
+
         for (uint i=0; i<length; i++) 
             canSlash[operator][msg.sender] = false;
 
