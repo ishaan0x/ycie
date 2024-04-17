@@ -306,7 +306,7 @@ contract DelegationManager is Ownable {
     function stakerUnbondingPeriod(
         address staker
     ) public view returns (uint256) {
-        return sm.unbondingPeriod[delegation[staker]];
+        return sm.unbondingPeriod(delegation[staker]);
     }
 
     function existsIn(
@@ -361,14 +361,13 @@ contract SlasherManager is Ownable {
             slashers[msg.sender].push(slasher);
         canSlash[msg.sender][slasher] = true;
 
-        if(Slasher(slasher).unbondingPeriod > unbondingPeriod[msg.sender])
-            unbondingPeriod[msg.sender] = Slasher(slasher).unbondingPeriod;
+        if(Slasher(slasher).unbondingPeriod() > unbondingPeriod[msg.sender])
+            unbondingPeriod[msg.sender] = Slasher(slasher).unbondingPeriod();
     }
 
     /**
      * @notice Operator exits from Slasher
      */
-    // TODO - include unbonding period logic
     function exitAVS(address slasher) external {
         if (isSlashed[msg.sender]) revert SlasherManager__OperatorSlashed();
 
@@ -385,14 +384,15 @@ contract SlasherManager is Ownable {
         }
         canSlash[msg.sender][slasher] = false;
 
-        if(Slasher(slasher).unbondingPeriod == unbondingPeriod[msg.sender]) {
+        // Change unbonding period to new highest unbonding period, if necessary
+        if(Slasher(slasher).unbondingPeriod() == unbondingPeriod[msg.sender]) {
             uint256 maxUnbondingPeriod = 0;
 
             address[] memory _slashers = slashers[msg.sender];
             uint256 length = _slashers.length;
             
             for (uint i=0; i<length; i++) {
-                uint256 ubp = Slasher(slashers[i]).unbondingPeriod;
+                uint256 ubp = Slasher(_slashers[i]).unbondingPeriod();
                 if (ubp > maxUnbondingPeriod)
                     maxUnbondingPeriod = ubp;
             }
