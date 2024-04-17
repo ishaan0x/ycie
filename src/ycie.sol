@@ -101,7 +101,7 @@ contract TokenManager is Ownable {
     function queueWithdrawal() external {
         if (withdrawalCompleteTime[msg.sender] != 0)
             revert TokenManager__WithdrawalAlreadyInProgress();
-        
+
         withdrawalCompleteTime[msg.sender] =
             block.timestamp +
             dm.stakerUnbondingPeriod(msg.sender);
@@ -322,7 +322,7 @@ contract DelegationManager is Ownable {
 }
 
 contract SlasherManager is Ownable {
-    DelegationManager dm;
+    DelegationManager private immutable dm;
 
     /**
      * Type Declarations
@@ -344,6 +344,7 @@ contract SlasherManager is Ownable {
      */
     mapping(address => bool) public isSlashed;
     mapping(address => mapping(address => bool)) public canSlash;
+    mapping(address => address[]) slashers;
 
     constructor() Ownable(msg.sender) {
         dm = DelegationManager(msg.sender);
@@ -352,33 +353,56 @@ contract SlasherManager is Ownable {
     /**
      * @notice Operator enrolls in Slasher
      */
+    // TODO - include unbonding period logic
     function enrollAVS(address slasher) external {
-        if (isSlashed[msg.sender])
-            revert SlasherManager__OperatorSlashed();
+        if (isSlashed[msg.sender]) revert SlasherManager__OperatorSlashed();
 
+        if (!canSlash[msg.sender][slasher])
+            slashers[msg.sender].push(slasher);
         canSlash[msg.sender][slasher] = true;
     }
 
     /**
      * @notice Operator exits from Slasher
      */
+    // TODO - include unbonding period logic
     function exitAVS(address slasher) external {
-        if (isSlashed[msg.sender])
-            revert SlasherManager__OperatorSlashed();
+        if (isSlashed[msg.sender]) revert SlasherManager__OperatorSlashed();
 
+        if (canSlash[msg.sender][slasher]) {
+            address[] memory _slashers = slashers[msg.sender];
+            uint256 length = _slashers.length;
+            
+            for (uint i=0; i<length; i++) {
+                if (_slashers[i] == slasher) {
+                    slashers[msg.sender][i] = _slashers[length-1];
+                    slashers[msg.sender].pop();
+                }
+            }
+        }
         canSlash[msg.sender][slasher] = false;
     }
 
     function slash(address operator) external {
         if (!canSlash[operator][msg.sender])
             revert SlasherManager__NotAllowedToSlash();
-        
+
         isSlashed[operator] = true;
+    }
+
+    function removeAllSlashers(address operator) external onlyOwner {
+        address[] memory _slashers = slashers[msg.sender];
+        uint256 length = _slashers.length;
+        
+        for (uint i=0; i<length; i++) 
+            canSlash[operator][msg.sender] = false;
+
+        delete slashers[operator];
     }
 }
 
-contract Slasher {
-    SlasherManager sm;
+contract Slasher is Ownable {
+    SlasherManager private immutable sm;
 
     /**
      * Type Declarations
@@ -389,8 +413,11 @@ contract Slasher {
         bool fraudulent;
     }
 
-    constructor() {
-        sm = SlasherManager(msg.sender);
+    uint256 public unbondingPeriod;
+
+    constructor(address _sm, uint256 ubp) Ownable(msg.sender) {
+        sm = SlasherManager(_sm);
+        unbondingPeriod = ubp;
     }
 
     /**
@@ -399,8 +426,11 @@ contract Slasher {
     function slash(address operator, Proof memory proof) public {
         // no need to do anything if proof is not valid
         if (isProofValid(proof))
-            if (sm.canSlash(operator, address(this)))
-                sm.slash(operator);
+            if (sm.canSlash(operator, address(this))) sm.slash(operator);
+    }
+
+    function changeUnbondingPeriod(uint256 ubp) external onlyOwner {
+        unbondingPeriod = ubp;
     }
 
     /**
