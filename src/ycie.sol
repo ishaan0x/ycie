@@ -213,7 +213,7 @@ contract DelegationManager is Ownable {
      * Constants
      */
     TokenManager public immutable tm;
-    Slasher public immutable slash;
+    SlasherManager public immutable sm;
     IERC20 public immutable token;
 
     /**
@@ -227,7 +227,7 @@ contract DelegationManager is Ownable {
      */
     mapping(address => mapping(address => uint256)) public operatorPoolShares;
     mapping(address => address) public delegation;
-    mapping(address => address[]) public slasher;
+    // mapping(address => address[]) public slasher;
     mapping(address => uint256) public unbondingPeriod;
 
     /**
@@ -235,7 +235,7 @@ contract DelegationManager is Ownable {
      */
     constructor() Ownable(msg.sender) {
         tm = TokenManager(msg.sender);
-        slash = new Slasher();
+        sm = new SlasherManager();
     }
 
     /**
@@ -261,35 +261,6 @@ contract DelegationManager is Ownable {
 
             operatorPoolShares[currentDelegate][pool] -= amount;
             operatorPoolShares[operator][pool] += amount;
-        }
-    }
-
-    /**
-     * @notice Operator enrolls in Slasher
-     */
-    function enroll(address _slasher) external {
-        if (isOperatorSlashed(msg.sender))
-            revert DelegationManager__OperatorSlashed();
-
-        address[] memory slashers = slasher[msg.sender];
-        if (existsIn(_slasher, slashers)) return;
-
-        slasher[msg.sender].push(_slasher);
-    }
-
-    /**
-     * @notice Operator exits from Slasher
-     */
-    function exit(address _slasher) external {
-        address[] memory slashers = slasher[msg.sender];
-        uint length = slashers.length;
-
-        for (uint i = 0; i < length; i++) {
-            if (slashers[i] == _slasher) {
-                slasher[msg.sender][i] = slasher[msg.sender][length - 1];
-                slasher[msg.sender].pop();
-                return;
-            }
         }
     }
 
@@ -323,14 +294,14 @@ contract DelegationManager is Ownable {
     }
 
     function isOperatorSlashed(address operator) public view returns (bool) {
-        return slash.isSlashed(operator);
+        return sm.isSlashed(operator);
     }
 
-    function getSlashers(
-        address operator
-    ) public view returns (address[] memory) {
-        return slasher[operator];
-    }
+    // function getSlashers(
+    //     address operator
+    // ) public view returns (address[] memory) {
+    //     return slasher[operator];
+    // }
 
     function stakerUnbondingPeriod(
         address staker
@@ -350,7 +321,7 @@ contract DelegationManager is Ownable {
     }
 }
 
-contract Slasher is Ownable {
+contract SlasherManager is Ownable {
     DelegationManager dm;
 
     /**
@@ -363,12 +334,63 @@ contract Slasher is Ownable {
     }
 
     /**
+     * Errors
+     */
+    error SlasherManager__OperatorSlashed();
+    error SlasherManager__NotAllowedToSlash();
+
+    /**
      * State Variables
      */
     mapping(address => bool) public isSlashed;
+    mapping(address => mapping(address => bool)) public canSlash;
 
     constructor() Ownable(msg.sender) {
         dm = DelegationManager(msg.sender);
+    }
+
+    /**
+     * @notice Operator enrolls in Slasher
+     */
+    function enrollAVS(address slasher) external {
+        if (isSlashed[msg.sender])
+            revert SlasherManager__OperatorSlashed();
+
+        canSlash[msg.sender][slasher] = true;
+    }
+
+    /**
+     * @notice Operator exits from Slasher
+     */
+    function exitAVS(address slasher) external {
+        if (isSlashed[msg.sender])
+            revert SlasherManager__OperatorSlashed();
+
+        canSlash[msg.sender][slasher] = false;
+    }
+
+    function slash(address operator) external {
+        if (!canSlash[operator][msg.sender])
+            revert SlasherManager__NotAllowedToSlash();
+        
+        isSlashed[operator] = true;
+    }
+}
+
+contract Slasher {
+    SlasherManager sm;
+
+    /**
+     * Type Declarations
+     */
+    // generic Proof object - replace
+    // True = fraudulent => user is slashed
+    struct Proof {
+        bool fraudulent;
+    }
+
+    constructor() {
+        sm = SlasherManager(msg.sender);
     }
 
     /**
@@ -377,8 +399,8 @@ contract Slasher is Ownable {
     function slash(address operator, Proof memory proof) public {
         // no need to do anything if proof is not valid
         if (isProofValid(proof))
-            if (dm.existsIn(operator, dm.getSlashers(operator)))
-                isSlashed[operator] = true;
+            if (sm.canSlash(operator, address(this)))
+                sm.slash(operator);
     }
 
     /**
