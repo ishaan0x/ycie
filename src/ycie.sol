@@ -227,8 +227,7 @@ contract DelegationManager is Ownable {
      */
     mapping(address => mapping(address => uint256)) public operatorPoolShares;
     mapping(address => address) public delegation;
-    // mapping(address => address[]) public slasher;
-    mapping(address => uint256) public unbondingPeriod;
+    
 
     /**
      * Special Functions
@@ -307,7 +306,7 @@ contract DelegationManager is Ownable {
     function stakerUnbondingPeriod(
         address staker
     ) public view returns (uint256) {
-        return unbondingPeriod[delegation[staker]];
+        return sm.unbondingPeriod[delegation[staker]];
     }
 
     function existsIn(
@@ -346,6 +345,7 @@ contract SlasherManager is Ownable {
     mapping(address => bool) public isSlashed;
     mapping(address => mapping(address => bool)) public canSlash;
     mapping(address => address[]) slashers;
+    mapping(address => uint256) public unbondingPeriod;
 
     constructor() Ownable(msg.sender) {
         dm = DelegationManager(msg.sender);
@@ -354,13 +354,15 @@ contract SlasherManager is Ownable {
     /**
      * @notice Operator enrolls in Slasher
      */
-    // TODO - include unbonding period logic
     function enrollAVS(address slasher) external {
         if (isSlashed[msg.sender]) revert SlasherManager__OperatorSlashed();
 
         if (!canSlash[msg.sender][slasher])
             slashers[msg.sender].push(slasher);
         canSlash[msg.sender][slasher] = true;
+
+        if(Slasher(slasher).unbondingPeriod > unbondingPeriod[msg.sender])
+            unbondingPeriod[msg.sender] = Slasher(slasher).unbondingPeriod;
     }
 
     /**
